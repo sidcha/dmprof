@@ -37,12 +37,13 @@
 #define DMPROF_LOC_FMT "%s:%d func:%s() "
 #define DMPROF_LOC_ARGS(X) X->file, X->line, X->func
 
-#define DMPROF_MEM_FMT "type:%s persist:%d addr:%p size:%li "
-#define DMPROF_MEM_ARGS(X) alloc_types[X->type], X->persist, X->addr, X->size
+#define DMPROF_MEM_FMT "type:%s uuid:0x%08x persist:%d addr:%p size:%li "
+#define DMPROF_MEM_ARGS(X) alloc_types[X->type], X->uuid, \
+				X->persist, X->addr, X->size
 
 #define dmprof_bind_error(fmt, ...)  do { \
-	fprintf(stderr, "dmprof: Error, AT " DMPROF_LOC_FMT fmt, \
-			file, line, func, __VA_ARGS__); } while (0)
+	fprintf(stderr, "dmprof: Error at " DMPROF_LOC_FMT  fmt, file, line, \
+			func, __VA_ARGS__); } while (0)
 
 enum {
 	TYPE_UNKNOWN,
@@ -121,7 +122,7 @@ void dmprof_event_log(const char *tag, struct dmprof_chunk *c)
 
 void dmprof_log_status()
 {
-	fprintf(log_file, "STATUS: OCC:%li PER:%li FLT: %li AC:%d FC:%d",
+	fprintf(log_file, "STATUS: Occ:%li Persist:%li Float:%li Acnt:%d Fcnt:%d\n",
 			dmprof_stats.mem_occupied,
 			dmprof_stats.mem_persistent,
 			dmprof_stats.mem_occupied - dmprof_stats.mem_persistent,
@@ -195,7 +196,7 @@ struct dmprof_chunk *dmprof_chunk_new()
 	struct dmprof_chunk* chunk;
 	chunk = malloc(sizeof(struct dmprof_chunk));
 	if (chunk == NULL) {
-		dmprof_bind_error("Failed to malloc %li bytes\n", size);
+		perror("dmprof: new chunk, failed at malloc");
 		return NULL;
 	}
 	chunk->type = TYPE_UNKNOWN;
@@ -263,11 +264,12 @@ void *dmprof_bind_malloc(size_t size, const char *file, int line,
 	struct dmprof_chunk* c;
 	void *p = malloc(size);
 	if (p == NULL) {
-		dmprof_error("Failed to malloc %li bytes\n", size);
+		dmprof_bind_error("Failed to malloc %li bytes\n", size);
 		return NULL;
 	}
 	c = dmprof_chunk_new();
 	if (c == NULL) {
+		dmprof_bind_error("Failed to create dmprof_chunk. new returned %p\n", c);
 		free(p);
 		return NULL;
 	}
@@ -278,10 +280,13 @@ void *dmprof_bind_malloc(size_t size, const char *file, int line,
 	c->file = file;
 	c->func = func;
 
-	dmprof_event_log("ALLOC", c);
+	printf("Malloc for %zu\n", size);
+
 	dmprof_stats.alloc_count++;
 	dmprof_stats.mem_occupied += c->size;
+	dmprof_chunk_set_uuid(c);
 	dmprof_add(c);
+	dmprof_event_log("ALLOC", c);
 	return p;
 }
 
@@ -291,11 +296,12 @@ void *dmprof_bind_calloc(size_t nmemb, size_t size, const char *file,
 	struct dmprof_chunk* c;
 	void *p = calloc(nmemb, size);
 	if (p == NULL) {
-		dmprof_error("Failed to calloc %li bytes\n", size);
+		dmprof_bind_error("Failed to calloc %li bytes\n", size);
 		return NULL;
 	}
 	c = dmprof_chunk_new();
 	if (c == NULL) {
+		dmprof_bind_error("Failed to create dmprof_chunk. new returned %p\n", c);
 		free(p);
 		return NULL;
 	}
@@ -306,10 +312,11 @@ void *dmprof_bind_calloc(size_t nmemb, size_t size, const char *file,
 	c->file = file;
 	c->func = func;
 
-	dmprof_event_log("ALLOC", c);
 	dmprof_stats.alloc_count++;
 	dmprof_stats.mem_occupied += c->size;
+	dmprof_chunk_set_uuid(c);
 	dmprof_add(c);
+	dmprof_event_log("ALLOC", c);
 	return p;
 }
 
@@ -319,11 +326,12 @@ char *dmprof_bind_strdup(const char *str, const char *file,  int line,
 	struct dmprof_chunk *c;
 	char *p = strdup(str);
 	if (p == NULL) {
-		dmprof_bind_error("Failed to calloc %li bytes\n", size);
+		dmprof_bind_error("Failed to calloc %zu bytes\n", strlen(str));
 		return NULL;
 	}
 	c = dmprof_chunk_new();
 	if (c == NULL) {
+		dmprof_bind_error("Failed to create dmprof_chunk. new returned %p\n", c);
 		free(p);
 		return NULL;
 	}
@@ -334,10 +342,11 @@ char *dmprof_bind_strdup(const char *str, const char *file,  int line,
 	c->file = file;
 	c->func = func;
 
-	dmprof_event_log("ALLOC", c);
 	dmprof_stats.alloc_count++;
 	dmprof_stats.mem_occupied += c->size;
+	dmprof_chunk_set_uuid(c);
 	dmprof_add(c);
+	dmprof_event_log("ALLOC", c);
 	return p;
 }
 
@@ -350,16 +359,16 @@ void dmprof_bind_free(void *p, const char* file, int line, const char *func)
 		return;
 	}
 	if (dmprof_remove(c)) {
-		dmprof_bind_error("Remove failed on chunk:\n");
+		dmprof_bind_error("Remove failed on chunk(%p)\n", c);
 		dmprof_print_chunk(c);
 	}
 	if (c->persist) {
-		dmprof_bind_error("Free on persistent chunk:\n");
+		dmprof_bind_error("Free on persistent chunk(%p)\n", c);
 		dmprof_print_chunk(c);
 	}
-	dmprof_event_log("FREE", c);
 	dmprof_stats.free_count++;
 	dmprof_stats.mem_occupied -= c->size;
+	dmprof_event_log("FREE", c);
 	free(c);
 	free(p);
 }

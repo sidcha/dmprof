@@ -1,12 +1,12 @@
 CC       := gcc
 CC_FLAGS := -Wall
 
-all: dmprof
+all: dirs dmprof
 
 dirs:
 	@mkdir -p bin obj
 
-dmprof: dirs obj/dmprof.o obj/leaky.o
+dmprof: obj/dmprof.o obj/leaky.o
 	@$(CC) $(CC_FLAGS) -o $@ $^
 
 obj/%.o: src/%.c
