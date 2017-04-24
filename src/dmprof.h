@@ -39,5 +39,6 @@ char *dmprof_bind_strdup(const char *str, const char *file,  int line, const cha
 void dmprof_init(const char *name, const char *file);
 void dmprof_app_init_done();
 void dmprof_log_status();
+void dmprof_log_floating();
 
 #endif

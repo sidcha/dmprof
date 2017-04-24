@@ -69,6 +69,10 @@ int main()
 		s[*b] = make_struct("Hello");
 		(*b)++;
 	}
+	dmprof_log_floating();
+	free(a);
+	free(b);
+	free(b);
 	dmprof_log_status();
 	for (i=0; i<10; i++) {
 		free (s[i]);
