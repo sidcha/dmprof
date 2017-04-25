@@ -65,7 +65,7 @@ int main()
 	*a = 10;
 	dmprof_log_status();
 	while(*b < *a) {
-		printf("Loop Count: %d\n", *a);
+		printf("Loop Count: %d\n", *b);
 		s[*b] = make_struct("Hello");
 		(*b)++;
 	}
@@ -74,9 +74,15 @@ int main()
 	free(b);
 	free(b);
 	dmprof_log_status();
-	for (i=0; i<10; i++) {
-		free (s[i]);
+
+	s[4] = realloc(s[4], 100);
+
+	dmprof_log_status();
+
+	for (i=0; i<9; i++) {
+		free_struct(s[i]);
 	}
+	// s[9] not free'd
 	dmprof_log_status();
 	return 0;
 }

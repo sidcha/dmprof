@@ -4,7 +4,7 @@ CC_FLAGS := -Wall
 all: dirs dmprof
 
 dirs:
-	@mkdir -p bin obj
+	@mkdir -p obj
 
 dmprof: obj/dmprof.o obj/leaky.o
 	@$(CC) $(CC_FLAGS) -o $@ $^
@@ -14,7 +14,7 @@ obj/%.o: src/%.c
 	@$(CC) $(CC_FLAGS) -o "$@" -c "$<"
 	
 clean:
-	@rm -rf bin obj
-	@rm -f dmprof
+	@rm -rf obj
+	@rm -f dmprof *.dmprof
 
 .PHONY: dmprof clean dirs all

@@ -35,12 +35,20 @@
 #undef strdup
 #undef calloc
 
-#define DMPROF_LOC_FMT "%s:%d func:%s() "
+#define MAX(a,b) ({ __typeof__ (a) _a = (a); \
+	           __typeof__ (b) _b = (b); \
+	         _a > _b ? _a : _b; })
+
+#define MIN(a,b) ({ __typeof__ (a) _a = (a); \
+	           __typeof__ (b) _b = (b); \
+	         _a > _b ? _b : _a; })
+
+#define DMPROF_LOC_FMT "%s:%d %s() "
 #define DMPROF_LOC_ARGS(X) X->file, X->line, X->func
 
-#define DMPROF_MEM_FMT "type:%s uuid:0x%08x persist:%d addr:%p size:%li "
+#define DMPROF_MEM_FMT "T:%s UUID:0x%08x ALID:%010u %p[%04li]%c "
 #define DMPROF_MEM_ARGS(X) alloc_types[X->type], X->uuid, \
-				X->persist, X->addr, X->size
+		X->alloc_id, X->addr, X->size, X->persist ? '*' : ' '
 
 enum {
 	TYPE_UNKNOWN,
@@ -53,9 +61,9 @@ enum {
 
 const char *alloc_types[TYPE_SENTINEL] = {
 	[TYPE_UNKNOWN] = "unknown",
-	[TYPE_STRDUP]  = "strdup",
-	[TYPE_MALLOC]  = "malloc",
-	[TYPE_CALLOC]  = "calloc",
+	[TYPE_STRDUP]  = "strdup ",
+	[TYPE_MALLOC]  = "malloc ",
+	[TYPE_CALLOC]  = "calloc ",
 	[TYPE_REALLOC] = "realloc"
 };
 
@@ -68,14 +76,15 @@ struct dmprof_chunk {
 	const char *file;
 	int line;
 	unsigned int uuid;
+	unsigned int alloc_id;
 	const char *func;
 };
 
 struct {
 	long mem_occupied;
 	long mem_persistent;
-	int alloc_count;
-	int free_count;
+	unsigned int alloc_count;
+	unsigned int free_count;
 } dmprof_stats;
 
 FILE *log_file = NULL;
@@ -114,20 +123,16 @@ unsigned int crc32(unsigned char *message) {
 	return reverse(~crc);
 }
 
-/*****************************************************************************/
-/* Log utils                                                                 */
-/*****************************************************************************/
-
 void dmprof_log_event(const char *tag, struct dmprof_chunk *c)
 {
-	fprintf(log_file, "EVENT:  %s " DMPROF_MEM_FMT "\tAT " DMPROF_LOC_FMT "\n",
+	fprintf(log_file, "EVENT:  %s " DMPROF_MEM_FMT "\tat " DMPROF_LOC_FMT "\n",
 		tag, DMPROF_MEM_ARGS(c), DMPROF_LOC_ARGS(c));
 	fflush(log_file);
 }
 
 void dmprof_log_status()
 {
-	fprintf(log_file, "STATUS: Occ:%li Persist:%li Float:%li Acnt:%d Fcnt:%d\n",
+	fprintf(log_file, "STATUS: O:%li P:%li F:%li AC:%d FC:%d\n",
 			dmprof_stats.mem_occupied,
 			dmprof_stats.mem_persistent,
 			dmprof_stats.mem_occupied - dmprof_stats.mem_persistent,
@@ -146,9 +151,18 @@ void dmprof_log_error(const char *fmt, ...)
 	fflush(log_file);
 }
 
+void dmprof_log_print(const char *fmt, ...)
+{
+	va_list argptr;
+	va_start(argptr, fmt);
+	vfprintf(log_file, fmt, argptr);
+	va_end(argptr);
+	fflush(log_file);
+}
+
 void dmprof_log_chunk(struct dmprof_chunk *c)
 {
-	fprintf(log_file, "\t => " DMPROF_MEM_FMT " ALLOC from " DMPROF_LOC_FMT "\n",
+	fprintf(log_file, "\t=> " DMPROF_MEM_FMT "\tALLOC from " DMPROF_LOC_FMT "\n",
 		DMPROF_MEM_ARGS(c), DMPROF_LOC_ARGS(c));
 	fflush(log_file);
 }
@@ -157,7 +171,7 @@ void dmprof_log_floating()
 {
 	struct dmprof_chunk *t;
 
-	fprintf(log_file, "LOG: Logging all current floating allocations:\n");
+	fprintf(log_file, "LOG:    Logging all current floating allocations:\n");
 
 	for (t=g_alloc_list; t; t=t->next) {
 		if (t->persist == 0)
@@ -246,7 +260,7 @@ void dmprof_chunk_set_uuid(struct dmprof_chunk *c)
 {
 	char buf[1024] = {0};
 
-	snprintf(buf, 1024, "%li:%s:%s:%d:%s()", c->size,
+	snprintf(buf, 1024, "DMPROF:%li:%u:%s:%s:%d:%s", c->size, c->alloc_id,
 		alloc_types[c->type], c->file, c->line, c->func);
 
 	c->uuid = crc32((unsigned char *)buf);
@@ -288,10 +302,6 @@ void dmprof_app_init_done()
 	dmprof_stats.mem_persistent = dmprof_stats.mem_occupied;
 }
 
-/*****************************************************************************/
-/* Application program bindings                                              */
-/*****************************************************************************/
-
 void *dmprof_bind_malloc(size_t size, const char *file, int line,
 		const char *func)
 {
@@ -303,7 +313,8 @@ void *dmprof_bind_malloc(size_t size, const char *file, int line,
 	}
 	c = dmprof_chunk_new();
 	if (c == NULL) {
-		dmprof_log_error("Failed to create dmprof_chunk. new returned %p\n", c);
+		dmprof_log_error("Failed to create dmprof_chunk."
+				" new returned %p\n", c);
 		free(p);
 		return NULL;
 	}
@@ -313,6 +324,7 @@ void *dmprof_bind_malloc(size_t size, const char *file, int line,
 	c->line = line;
 	c->file = file;
 	c->func = func;
+	c->alloc_id = dmprof_stats.alloc_count;
 
 	dmprof_stats.alloc_count++;
 	dmprof_stats.mem_occupied += c->size;
@@ -333,7 +345,8 @@ void *dmprof_bind_calloc(size_t nmemb, size_t size, const char *file,
 	}
 	c = dmprof_chunk_new();
 	if (c == NULL) {
-		dmprof_log_error("Failed to create dmprof_chunk. new returned %p\n", c);
+		dmprof_log_error("Failed to create dmprof_chunk."
+				" new returned %p\n", c);
 		free(p);
 		return NULL;
 	}
@@ -343,6 +356,8 @@ void *dmprof_bind_calloc(size_t nmemb, size_t size, const char *file,
 	c->line = line;
 	c->file = file;
 	c->func = func;
+	c->alloc_id = dmprof_stats.alloc_count;
+
 
 	dmprof_stats.alloc_count++;
 	dmprof_stats.mem_occupied += c->size;
@@ -363,7 +378,8 @@ char *dmprof_bind_strdup(const char *str, const char *file,  int line,
 	}
 	c = dmprof_chunk_new();
 	if (c == NULL) {
-		dmprof_log_error("Failed to create dmprof_chunk. new returned %p\n", c);
+		dmprof_log_error("Failed to create dmprof_chunk."
+				" new returned %p\n", c);
 		free(p);
 		return NULL;
 	}
@@ -373,6 +389,7 @@ char *dmprof_bind_strdup(const char *str, const char *file,  int line,
 	c->line = line;
 	c->file = file;
 	c->func = func;
+	c->alloc_id = dmprof_stats.alloc_count;
 
 	dmprof_stats.alloc_count++;
 	dmprof_stats.mem_occupied += c->size;
@@ -382,24 +399,77 @@ char *dmprof_bind_strdup(const char *str, const char *file,  int line,
 	return p;
 }
 
+
+
+void *dmprof_bind_realloc(void *ptr, size_t size, const char *file,
+		int line, const char *func)
+{
+	struct dmprof_chunk *old=NULL, *new=NULL;
+	size_t new_size = size;
+
+	if (ptr != NULL) {
+		old = dmprof_find_chunk(ptr);
+		if (old == NULL) {
+			dmprof_log_error("realloc called on non alloc'd"
+					" pointer %p", ptr);
+			return NULL;
+		}
+		if (size == 0) {
+			dmprof_bind_free(old->addr, __FILE__, __LINE__, __FUNCTION__);
+			return NULL;
+		}
+		new_size = MIN(size, old->size);
+	}
+
+	void *new_ptr = malloc(new_size);
+	if (new_ptr == NULL) {
+		dmprof_log_error("realloc failed to malloc again!"
+				" asked for %lu bytes\n", new_size);
+		return NULL;
+	}
+
+	if (ptr != NULL) {
+		memcpy(new_ptr, old->addr, new_size);
+		// Call a bind_free so the logs indicate this free.
+		dmprof_bind_free(old->addr, __FILE__, __LINE__, __FUNCTION__);
+	}
+
+	new = dmprof_chunk_new();
+
+	new->type = TYPE_REALLOC;
+	new->addr = new_ptr;
+	new->size = new_size;
+	new->line = line;
+	new->file = file;
+	new->func = func;
+	new->alloc_id = dmprof_stats.alloc_count;
+
+	dmprof_stats.alloc_count++;
+	dmprof_stats.mem_occupied += new->size;
+	dmprof_chunk_set_uuid(new);
+	dmprof_add_chunk(new);
+	dmprof_log_event("ALLOC", new);
+	return new_ptr;
+}
+
 void dmprof_bind_free(void *p, const char* file, int line, const char *func)
 {
 	struct dmprof_chunk *c = dmprof_find_chunk(p);
 	if (c == NULL) {
-		dmprof_log_error("Free unalloc %p\n", p);
+		dmprof_log_error("Free unalloc %p AT " DMPROF_LOC_FMT "\n",
+				p, file, line, func);
 		return;
 	}
 	if (dmprof_remove_chunk(c)) {
-		dmprof_log_error("Remove failed on chunk(%p)\n", c);
+		dmprof_log_error("Remove failed C:%p P:%p At "
+				DMPROF_LOC_FMT "\n", c, p, file, line, func);
 		dmprof_log_chunk(c);
-	}
-	if (c->persist) {
-		dmprof_log_error("Free on persistent chunk(%p)\n", c);
-		dmprof_log_chunk(c);
-	}
+	} 
 	dmprof_stats.free_count++;
 	dmprof_stats.mem_occupied -= c->size;
-	dmprof_log_event("FREE", c);
+	fprintf(log_file, "EVENT:  FREE  " DMPROF_MEM_FMT "\tat "
+		DMPROF_LOC_FMT "\n", DMPROF_MEM_ARGS(c), file, line, func);
+	fflush(log_file);
 	free(c->addr);
 	free(c);
 }

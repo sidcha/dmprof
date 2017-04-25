@@ -35,6 +35,7 @@ void dmprof_bind_free(void *p, const char* file, int line, const char *func);
 void *dmprof_bind_malloc(size_t size, const char *file, int line, const char *func);
 void *dmprof_bind_calloc(size_t nmemb, size_t size, const char *file, int line, const char *func);
 char *dmprof_bind_strdup(const char *str, const char *file,  int line, const char *func);
+void *dmprof_bind_realloc(void *ptr, size_t size, const char *file, int line, const char *func);
 
 void dmprof_init(const char *name, const char *file);
 void dmprof_app_init_done();
