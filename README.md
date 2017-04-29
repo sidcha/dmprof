@@ -7,7 +7,7 @@ $ make
 $ ./dmprof
 ```
 
-This should produce a `leaky.dmprof` log file. You can them process the log file to get meaning full data with,
+This should produce a `leaky.dmprof` log file. You can then process the log file to get meaning full data with,
 
 ``` shell
 $ tools/report.pl leaky.dmprof > dmprof.report

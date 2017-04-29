@@ -59,8 +59,6 @@ int main()
 	int *a = malloc(sizeof(int));
 	int *b = malloc(sizeof(int));
 
-	dmprof_app_init_done();
-
 	*b = 0;
 	*a = 10;
 	dmprof_log_status();
@@ -84,5 +82,6 @@ int main()
 	}
 	// s[9] not free'd
 	dmprof_log_status();
+	dmprof_log_floating();
 	return 0;
 }
