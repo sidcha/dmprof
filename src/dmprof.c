@@ -50,6 +50,13 @@
 #define DMPROF_MEM_ARGS(X) alloc_types[X->type], X->uuid, \
 		X->alloc_id, X->addr, X->size
 
+#define BOUNDS_CHECK_MAGIC_1 "\xde\xad\xbe\xaf"
+#define BOUNDS_CHECK_MAGIC_2 "\xca\xfe\xba\xbe"
+
+#define REP4(X) (X)(X)(X)(X)
+#define BOUNDS_CHECK_TOP REP4(BOUNDS_CHECK_MAGIC_1)
+#define BOUNDS_CHECK_BOT REP4(BOUNDS_CHECK_MAGIC_2)
+
 enum {
 	TYPE_UNKNOWN,
 	TYPE_STRDUP,
@@ -98,6 +105,12 @@ struct dmprof_chunk {
 	unsigned int uuid;
 	unsigned int alloc_id;
 	const char *func;
+	union {
+		unsigned int all_flags;
+		struct {
+			unsigned int bounds_check:1;
+		}flags;
+	};
 };
 
 struct {
@@ -120,7 +133,8 @@ unsigned reverse(unsigned int x) {
 	return x;
 }
 
-unsigned int crc32(unsigned char *message) {
+unsigned int crc32(unsigned char *message)
+{
 	int i, j;
 	unsigned int byte, crc;
 
@@ -142,10 +156,10 @@ unsigned int crc32(unsigned char *message) {
 
 void dmprof_log(int log_level, const char *fmt, ...)
 {
-	if (log_level < dmprof_log_level     ||
-		log_level >= DMPLOG_SENTINEL ||
-		log_level < DMPLOG_DEBUG)
+	if (log_level >= DMPLOG_SENTINEL || log_level < 0 ||
+			log_level < dmprof_log_level) {
 		return;
+	}
 
 	FILE *fd = fopen(dmprof_stats.log_file, "a+");
 	if (fd == NULL) {
@@ -276,6 +290,7 @@ struct dmprof_chunk *dmprof_chunk_new()
 	chunk->line = 0;
 	chunk->file = "\0";
 	chunk->func = "\0";
+	chunk->all_flags = 0;
 	return chunk;
 }
 
@@ -317,11 +332,51 @@ void dmprof_init(const char *name, const char *log_file)
 	fclose(fp);
 }
 
+void *dmprof_bound_malloc(size_t size)
+{
+	void *ptr;
+	unsigned char *end;
+	int top_len = strlen(BOUNDS_CHECK_TOP);
+	int bot_len = strlen(BOUNDS_CHECK_BOT);
+
+	size += top_len + bot_len;
+	ptr = malloc(size);
+	if (ptr == NULL)
+		return NULL;
+
+	end = (unsigned char *)ptr + (size-strlen(BOUNDS_CHECK_BOT));
+	memcpy(ptr, BOUNDS_CHECK_TOP, top_len);
+	memcpy(end, BOUNDS_CHECK_BOT, bot_len);
+	return ptr;
+}
+
+int dmprof_bounds_check(void *bound_pointer)
+{
+	unsigned char *end;
+	int top_len = strlen(BOUNDS_CHECK_TOP);
+	int bot_len = strlen(BOUNDS_CHECK_BOT);
+
+	end = (unsigned char *)ptr + (size-strlen(BOUNDS_CHECK_BOT));
+	if (memcmp(bound_pointer, BOUNDS_CHECK_TOP, top_len) != 0)
+		return -1;
+
+	if (memcmp(end, BOUNDS_CHECK_BOT, bot_len) != 0)
+		return -1;
+
+	return 0;
+}
+
+void *dmprof_get_user_space_pointer(void *bound_pointer)
+{
+	int top_len = strlen(BOUNDS_CHECK_TOP);
+	return (void *)((unsigned char *)bound_pointer + top_len);
+}
+
 void *dmprof_bind_malloc(size_t size, const char *file, int line,
-		const char *func)
+						const char *func)
 {
 	struct dmprof_chunk* c;
-	void *p = malloc(size);
+	void *p = dmprof_bound_malloc(size);
 	if (p == NULL) {
 		dmprof_log(DMPLOG_ERROR, "Failed to malloc %li bytes\n", size);
 		return NULL;
@@ -333,8 +388,10 @@ void *dmprof_bind_malloc(size_t size, const char *file, int line,
 		free(p);
 		return NULL;
 	}
+	c->flags.bounds_check = 1;
 	c->type = TYPE_MALLOC;
-	c->addr = p;
+	c->bound_ptr = p;
+	c->addr = dmprof_get_user_space_pointer(p);
 	c->size = size;
 	c->line = line;
 	c->file = file;
@@ -346,11 +403,11 @@ void *dmprof_bind_malloc(size_t size, const char *file, int line,
 	dmprof_chunk_set_uuid(c);
 	dmprof_add_chunk(c);
 	dmprof_log_event("ALLOC", c);
-	return p;
+	return c->addr;
 }
 
 void *dmprof_bind_calloc(size_t nmemb, size_t size, const char *file,
-		int line, const char *func)
+						int line, const char *func)
 {
 	struct dmprof_chunk* c;
 	void *p = calloc(nmemb, size);
@@ -383,7 +440,7 @@ void *dmprof_bind_calloc(size_t nmemb, size_t size, const char *file,
 }
 
 char *dmprof_bind_strdup(const char *str, const char *file,  int line,
-		const char *func)
+							const char *func)
 {
 	struct dmprof_chunk *c;
 	char *p = strdup(str);
@@ -418,7 +475,7 @@ char *dmprof_bind_strdup(const char *str, const char *file,  int line,
 
 
 void *dmprof_bind_realloc(void *ptr, size_t size, const char *file,
-		int line, const char *func)
+						int line, const char *func)
 {
 	struct dmprof_chunk *old=NULL, *new=NULL;
 	size_t new_size = size;
@@ -470,6 +527,7 @@ void *dmprof_bind_realloc(void *ptr, size_t size, const char *file,
 
 void dmprof_bind_free(void *p, const char* file, int line, const char *func)
 {
+	void *free_prt;
 	struct dmprof_chunk *c = dmprof_find_chunk(p);
 	if (c == NULL) {
 		dmprof_log(DMPLOG_ERROR, "Free unalloc %p AT " DMPROF_LOC_FMT
@@ -485,6 +543,12 @@ void dmprof_bind_free(void *p, const char* file, int line, const char *func)
 	dmprof_stats.mem_occupied -= c->size;
 	dmprof_log(DMPLOG_EVENT, "FREE  " DMPROF_MEM_FMT "\tat " DMPROF_LOC_FMT
 			"\n", DMPROF_MEM_ARGS(c), file, line, func);
+	
+	free_prt = c->addr;
+	if (c->flags.bounds_check) {
+		free_prt = c->bound_pointer;
+	}
+	free(free_prt);
 	free(c);
 }
 
